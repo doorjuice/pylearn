@@ -77,4 +77,3 @@ class CIFAR10(dense_design_matrix.DenseDesignMatrix):
         dict = cPickle.load(fo)
         fo.close()
         return dict
-#

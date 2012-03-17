@@ -21,6 +21,7 @@ from pylearn2.models import Model
 from pylearn2.optimizer import SGDOptimizer
 from pylearn2.expr.basic import theano_norms
 from pylearn2.linear.matrixmul import MatrixMul
+from pylearn2.space import VectorSpace
 theano.config.warn.sum_div_dimshuffle_bug = False
 
 if 0:
@@ -208,8 +209,18 @@ class RBM(Block, Model):
         ----------
         nvis : int
             Number of visible units in the model.
+            (Specifying this implies that the model acts on a vector,
+            i.e. it sets vis_space = pylearn2.space.VectorSpace(nvis) )
         nhid : int
             Number of hidden units in the model.
+            (Specifying this implies that the model acts on a vector)
+        vis_space:
+            A pylearn2.space.Space object describing what kind of vector
+            space the RBM acts on. Don't specify if you used nvis / hid
+        hid_space:
+            A pylearn2.space.Space object describing what kind of vector
+            space the RBM's hidden units live in. Don't specify if you used
+            nvis / nhid
         irange : float, optional
             The size of the initial interval around 0 for weights.
         rng : RandomState object or seed
@@ -267,6 +278,9 @@ class RBM(Block, Model):
                     borrow=True
                 )
             )
+
+            self.vis_space = VectorSpace(nvis)
+            self.hid_space = VectorSpace(nhid)
         else:
             assert hid_space is not None
             assert transformer is not None
@@ -305,16 +319,29 @@ class RBM(Block, Model):
         self.sml_gibbs_steps = sml_gibbs_steps
 
     def get_input_dim(self):
-        return self.nvis
+        if not isinstance(self.vis_space, VectorSpace):
+            raise TypeError("Can't describe "+str(type(self.vis_space))+" as a dimensionality number.")
+        return self.vis_space.dim
+
+    def get_output_dim(self):
+        if not isinstance(self.hid_space, VectorSpace):
+            raise TypeError("Can't describe "+str(type(self.hid_space))+" as a dimensionality number.")
+        return self.hid_space.dim
 
     def get_input_space(self):
         return self.vis_space
+
+    def get_output_space(self):
+        return self.hid_space
 
     def get_params(self):
         return [param for param in self._params]
 
     def get_weights(self, borrow=False):
-        return self.weights.get_value(borrow=borrow)
+
+        weights ,= self.transformer.get_params()
+
+        return weights.get_value(borrow=borrow)
 
     def get_weights_topo(self, borrow=False):
         return self.transformer.get_weights_topo(borrow = borrow)
@@ -413,7 +440,7 @@ class RBM(Block, Model):
 
         optimizer = SGDOptimizer(self, self.base_lr, self.anneal_start)
 
-        sampler = sampler = BlockGibbsSampler(self, 0.5 + np.zeros((self.nchains, self.nvis)), self.rng,
+        sampler = sampler = BlockGibbsSampler(self, 0.5 + np.zeros((self.nchains, self.get_input_dim())), self.rng,
                                                   steps= self.sml_gibbs_steps)
 
 

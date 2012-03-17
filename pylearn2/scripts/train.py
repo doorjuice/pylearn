@@ -24,6 +24,7 @@ import numpy as np
 # Local imports
 import pylearn2.config.yaml_parse
 from pylearn2.utils import serial
+from pylearn2.utils import environ
 from pylearn2.monitor import Monitor
 
 
@@ -97,13 +98,13 @@ class Train(object):
             self.save_path = save_path
         else:
             if save_freq > 0:
-                phase_variable = 'PYLEARN2_TRAINING_PHASE'
+                phase_variable = 'PYLEARN2_TRAIN_PHASE'
                 if phase_variable in os.environ:
                     phase = 'phase%d' % os.environ[phase_variable]
                     tokens = [os.environ['PYLEARN2_TRAIN_FILE_NAME'],
-                              phase, '.pkl']
+                              phase, 'pkl']
                 else:
-                    tokens = os.environ['PYLEARN2_TRAIN_FILE_NAME'], '.pkl'
+                    tokens = os.environ['PYLEARN2_TRAIN_FILE_NAME'], 'pkl'
                 self.save_path = '.'.join(tokens)
         self.save_freq = save_freq
         self.epochs = 0
@@ -188,16 +189,20 @@ if __name__ == "__main__":
     args = parser.parse_args()
     config_file_path = args.config.name
     suffix_to_strip = '.yaml'
+    # publish environment variables related to file name
     if config_file_path.endswith(suffix_to_strip):
-        config_file_name = config_file_path[0:-len(suffix_to_strip)]
+        config_file_full_stem = config_file_path[0:-len(suffix_to_strip)]
     else:
-        config_file_name = config_file_path
-    # publish the PYLEARN2_TRAIN_FILE_NAME environment variable
-    varname = "PYLEARN2_TRAIN_FILE_NAME"
-    # this makes it available to other sections of code in this same script
-    os.environ[varname] = config_file_name
-    # this make it available to any subprocesses we launch
-    os.putenv(varname, config_file_name)
+        config_file_full_stem = config_file_path
+
+    for varname in ["PYLEARN2_TRAIN_FILE_NAME", #this one is deprecated
+            "PYLEARN2_TRAIN_FILE_FULL_STEM"]: #this is the new, accepted name
+        environ.putenv(varname, config_file_full_stem)
+
+    environ.putenv("PYLEARN2_TRAIN_DIR", '/'.join(config_file_path.split('/')[:-1]) )
+    environ.putenv("PYLEARN2_TRAIN_BASE_NAME", config_file_path.split('/')[-1] )
+    environ.putenv("PYLEARN2_TRAIN_FILE_STEM", config_file_full_stem.split('/')[-1] )
+
     train_obj = pylearn2.config.yaml_parse.load(args.config)
     try:
         iter(train_obj)
@@ -205,8 +210,18 @@ if __name__ == "__main__":
     except TypeError as e:
         iterable = False
     if iterable:
-        for subobj in iter(train_obj):
+        for number, subobj in enumerate(iter(train_obj)):
+            # Publish a variable indicating the training phase.
+            phase_variable = 'PYLEARN2_TRAIN_PHASE'
+            phase_value = 'phase%d' % (number + 1)
+            os.environ[phase_variable] = phase_value
+            os.putenv(phase_variable, phase_value)
+
+            # Execute this training phase.
             subobj.main_loop()
+
+            # Clean up, in case there's a lot of memory used that's
+            # necessary for the next phase.
             del subobj
             gc.collect()
     else:

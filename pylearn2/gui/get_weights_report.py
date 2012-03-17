@@ -52,10 +52,16 @@ def get_weights_report(model_path = None, model = None, rescale = 'individual', 
         del model['__globals__']
         weights ,= model.values()
 
+        norms = np.sqrt(np.square(weights).sum(axis=1))
+        print 'min norm: ',norms.min()
+        print 'mean norm: ',norms.mean()
+        print 'max norm: ',norms.max()
+
         return patch_viewer.make_viewer(weights, is_color = weights.shape[1] % 3 == 0)
 
     weights_view = None
     W = None
+
     try:
         weights_view = model.get_weights_topo()
         h = weights_view.shape[0]

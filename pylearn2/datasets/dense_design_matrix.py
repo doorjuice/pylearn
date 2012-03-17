@@ -1,6 +1,7 @@
 """TODO: module-level docstring."""
 import functools
 
+import warnings
 import numpy as np
 from pylearn2.utils.iteration import (
     SequentialSubsetIterator,
@@ -54,12 +55,13 @@ class DenseDesignMatrix(Dataset):
             A random number generator used for picking random
             indices into the design matrix when choosing minibatches.
         """
-        if X is not None:
-            self.X = X
+        self.X = X
+        if view_converter is not None:
+            assert topo_view is None
             self.view_converter = view_converter
         else:
-            assert topo_view is not None
-            self.set_topological_view(topo_view)
+            if topo_view is not None:
+                self.set_topological_view(topo_view)
         self.y = y
         self.compress = False
         self.design_loc = None
@@ -67,10 +69,15 @@ class DenseDesignMatrix(Dataset):
             self.rng = rng
         else:
             self.rng = np.random.RandomState(rng)
+        # Defaults for iterators
+        self._iter_mode = resolve_iterator_class('sequential')
+        self._iter_topo = False
+        self._iter_targets = False
+
 
     @functools.wraps(Dataset.set_iteration_scheme)
     def set_iteration_scheme(self, mode=None, batch_size=None,
-                             num_batches=None, topo=False):
+                             num_batches=None, topo=False, targets=False):
         if mode is not None:
             self._iter_subset_class = mode = resolve_iterator_class(mode)
         elif hasattr(self, '_iter_subset_class'):
@@ -82,6 +89,7 @@ class DenseDesignMatrix(Dataset):
         self._iter_batch_size = batch_size
         self._iter_num_batches = num_batches
         self._iter_topo = topo
+        self._iter_targets = targets
         # Try to create an iterator with these settings.
         rng = self.rng if mode.stochastic else None
         print rng
@@ -89,7 +97,7 @@ class DenseDesignMatrix(Dataset):
 
     @functools.wraps(Dataset.iterator)
     def iterator(self, mode=None, batch_size=None, num_batches=None,
-                 topo=None, rng=None):
+                 topo=None, targets=None, rng=None):
         # TODO: Refactor, deduplicate with set_iteration_scheme
         if mode is None:
             if hasattr(self, '_iter_subset_class'):
@@ -105,12 +113,14 @@ class DenseDesignMatrix(Dataset):
             num_batches = getattr(self, '_iter_num_batches', None)
         if topo is None:
             topo = getattr(self, '_iter_topo', False)
+        if targets is None:
+            targets = getattr(self, '_iter_targets', False)
         if rng is None and mode.stochastic:
             rng = self.rng
         return FiniteDatasetIterator(self,
                                      mode(self.X.shape[0], batch_size,
                                      num_batches, rng),
-                                     topo)
+                                     topo, targets)
 
     def use_design_loc(self, path):
         """
@@ -180,6 +190,99 @@ class DenseDesignMatrix(Dataset):
                 self.X = None
         else:
             self.__dict__.update(d)
+    
+    def _apply_holdout(self, _mode="sequential", train_size=0, train_prop=0):
+        """
+          This function splits the dataset according to the number of
+          train_size if defined by the user with respect to the mode provided 
+          by the user. Otherwise it will use the 
+          train_prop to divide the dataset into a training and holdout 
+          validation set. This function returns the training and validation 
+          dataset.
+
+          Parameters
+          -----------
+          train_size: The number of examples that will be assigned to
+          the training dataset.
+          train_prop: Proportion of training dataset split.
+        """
+
+        train = None
+        valid = None
+        if train_size !=0:
+            dataset_iter = self.iterator(mode=_mode, 
+                    batch_size=(self.num_examples - train_size),
+                    num_batches=2)
+            train = dataset_iter.next()
+            valid = dataset_iter.next()
+        elif train_prop !=0:
+            size = np.ceil(self.num_examples * train_prop)
+            dataset_iter = self.iterator(mode=_mode,
+                    batch_size=(self.num_examples - size))
+            train = dataset_iter.next()
+            valid = dataset_iter.next()
+        else:
+            raise ValueError("Initialize either split ratio and split size to non-zero value.")
+        return (train, valid)
+
+    def split_dataset_nfolds(self, nfolds=0):
+        """
+          This function splits the dataset into to the number of n folds 
+          given by the user. Returns an array of folds.
+
+          Parameters
+          -----------
+          nfolds: The number of folds for the  the validation set.
+        """
+
+        folds_iter = self.iterator(mode="sequential", num_batches=nfolds)
+        folds = list(folds_iter)
+        return folds
+
+    def split_dataset_holdout(self, train_size=0, train_prop=0):
+        """
+          This function splits the dataset according to the number of
+          train_size if defined by the user. Otherwise it will use the 
+          train_prop to divide the dataset into a training and holdout 
+          validation set. This function returns the training and validation 
+          dataset.
+
+          Parameters
+          -----------
+          train_size: The number of examples that will be assigned to
+          the training dataset.
+          train_prop: Proportion of dataset split.
+        """
+        return self._apply_holdout("sequential", train_size, train_prop)
+
+    def bootstrap_nfolds(self, nfolds, rng=None):
+        """
+          This function splits the dataset using the random_slice and into the 
+          n folds. Returns the folds.
+
+          Parameters
+          -----------
+          nfolds: The number of folds for the  dataset.
+          rng: Random number generation class to be used.
+        """
+
+        folds_iter = self.iterator(mode="random_slice", num_batches=nfolds, rng=rng)
+        folds = list(folds_iter)
+        return folds
+
+    def bootstrap_holdout(self, train_size=0, train_prop=0, rng=None):
+        """
+          This function splits the dataset according to the number of
+          train_size defined by the user.
+
+          Parameters
+          -----------
+          train_size: The number of examples that will be assigned to
+          the training dataset.
+          nfolds: The number of folds for the  the validation set.
+          rng: Random number generation class to be used.
+        """
+        return self._apply_holdout("random_slice", train_size, train_prop)
 
     def get_stream_position(self):
         """
@@ -291,6 +394,13 @@ class DenseDesignMatrix(Dataset):
         assert not N.any(N.isnan(X))
         self.X = X
 
+    def get_targets(self):
+        return self.y
+
+    @property
+    def num_examples(self):
+        return self.X.shape[0]
+
     def get_batch_design(self, batch_size, include_labels=False):
         idx = self.rng.randint(self.X.shape[0] - batch_size + 1)
         rx = self.X[idx:idx + batch_size, :]
@@ -370,5 +480,13 @@ class DefaultViewConverter(object):
 
 
 def from_dataset(dataset, num_examples):
-    V = dataset.get_batch_topo(num_examples)
+    try:
+        V = dataset.get_batch_topo(num_examples)
+    except:
+        if isinstance(dataset, DenseDesignMatrix):
+            warnings.warn("from_dataset wasn't able to make subset of dataset, using the whole thing")
+            return DenseDesignMatrix(X = None, view_converter = dataset.view_converter)
+            #This patches a case where control.get_load_data() is false so dataset.X is None
+            #This logic should be removed whenever we implement lazy loading
+        raise
     return DenseDesignMatrix(topo_view=V)

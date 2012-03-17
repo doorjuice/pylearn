@@ -25,7 +25,6 @@ from scipy.sparse.csr import csr_matrix
 import theano
 from theano import tensor
 from theano.sparse import SparseType, structured_dot
-from pylearn.algorithms import pca_online_estimator
 from scipy import linalg
 from scipy.sparse.csr import csr_matrix
 
@@ -49,9 +48,12 @@ from pylearn2.base import Block
 from pylearn2.utils import sharedX
 
 
-class PCA(Block):
+class _PCABase(Block):
     """
     Block which transforms its input via Principal Component Analysis.
+
+    This class is not intended to be instantiated directly. Use a
+    subclass to select a particular PCA implementation.
     """
 
     def __init__(self, num_components=None, min_variance=0.0, whiten=False):
@@ -69,7 +71,7 @@ class PCA(Block):
             standard deviation
         """
 
-        super(PCA, self).__init__()
+        super(_PCABase, self).__init__()
 
         self.num_components = num_components
         self.min_variance = min_variance
@@ -215,10 +217,10 @@ class PCA(Block):
             all eigenvalues in decreasing order
             matrix containing corresponding eigenvectors in its columns
         """
-        raise NotImplementedError('_cov _eigen')
+        raise NotImplementedError('Not implemented in _PCABase. Use a subclass (and implement it there).')
 
 
-class SparseMatPCA(PCA):
+class SparseMatPCA(_PCABase):
     """ Does PCA on sparse  matrices. Does not do online PCA.
         This is for the case where X - X.mean() does not fit
         in memory (because it's dense) but
@@ -292,7 +294,9 @@ class SparseMatPCA(PCA):
         return theano.function([inputs], self(inputs), name=name)
 
 
-class OnlinePCA(PCA):
+class OnlinePCA(_PCABase):
+    """Online PCA implementation. Requires pylearn1."""
+
     def __init__(self, minibatch_size=500, **kwargs):
         super(OnlinePCA, self).__init__(**kwargs)
         self.minibatch_size = minibatch_size
@@ -304,6 +308,7 @@ class OnlinePCA(PCA):
 
         num_components = min(self.num_components, X.shape[1])
 
+        from pylearn.algorithms import pca_online_estimator
         pca_estimator = pca_online_estimator.PcaOnlineEstimator(X.shape[1],
             n_eigen=num_components,
             minibatch_size=self.minibatch_size,
@@ -343,7 +348,7 @@ class Cov:
         return rval / float(m - 1)
 
 
-class CovEigPCA(PCA):
+class CovEigPCA(_PCABase):
     def __init__(self, cov_batch_size=None, **kwargs):
         super(CovEigPCA, self).__init__(**kwargs)
         if cov_batch_size is not None:
@@ -361,7 +366,7 @@ class CovEigPCA(PCA):
         return v[::-1], W[:, ::-1]
 
 
-class SVDPCA(PCA):
+class SVDPCA(_PCABase):
     def _cov_eigen(self, X):
         """
         Compute covariance matrix eigen{values,vectors} via Singular Value
@@ -375,7 +380,7 @@ class SVDPCA(PCA):
         return s ** 2, Vh.T
 
 
-class SparsePCA(PCA):
+class SparsePCA(_PCABase):
     def train(self, X, mean=None):
         print >> sys.stderr, ('WARNING: You should probably be using '
                               'SparseMatPCA, unless your design matrix fits '
@@ -433,6 +438,178 @@ class SparsePCA(PCA):
         """ Returns a compiled theano function to compute a representation """
         inputs = SparseType('csr', dtype=theano.config.floatX)()
         return theano.function([inputs], self(inputs), name=name)
+
+
+
+class PcaOnlineEstimator(object):
+    """Online estimation of the leading eigen values/vectors of the covariance
+    of some samples.
+
+    Maintains a moving (with discount) low rank (n_eigen) estimate of the
+    covariance matrix of some observations. New observations are accumulated
+    until the batch is complete, at which point the low rank estimate is
+    reevaluated.
+
+    Example:
+
+      pca_esti = pca_online_estimator.PcaOnlineEstimator(dimension_of_the_samples)
+
+      for i in range(number_of_samples):
+        pca_esti.observe(samples[i])
+
+      [eigvals, eigvecs] = pca_esti.getLeadingEigen()
+
+    """
+
+
+    def __init__(self, n_dim, n_eigen = 10, minibatch_size = 25, gamma = 0.999, regularizer = 1e-6, centering = True):
+        # dimension of the observations
+        self.n_dim = n_dim
+        # rank of the low-rank estimate
+        self.n_eigen = n_eigen
+        # how many observations between reevaluations of the low rank estimate
+        self.minibatch_size = minibatch_size
+        # the discount factor in the moving estimate
+        self.gamma = gamma
+        # regularizer of the covariance estimate
+        self.regularizer = regularizer
+        # wether we center the observations or not: obtain leading eigen of
+        # covariance (centering = True) vs second moment (centering = False)
+        self.centering = centering
+
+        # Total number of observations: to compute the normalizer for the mean and
+        # the covariance.
+        self.n_observations = 0
+        # Index in the current minibatch
+        self.minibatch_index = 0
+
+        # Matrix containing on its *rows*:
+        # - the current unnormalized eigen vector estimates
+        # - the observations since the last reevaluation
+        self.Xt = numpy.zeros([self.n_eigen + self.minibatch_size, self.n_dim])
+
+        # The discounted sum of the observations.
+        self.x_sum = numpy.zeros([self.n_dim])
+
+        # The Gram matrix of the observations, ie Xt Xt' (since Xt is rowwise)
+        self.G = numpy.zeros([self.n_eigen + self.minibatch_size, self.n_eigen + self.minibatch_size])
+        for i in range(self.n_eigen):
+            self.G[i,i] = self.regularizer
+
+        # I don't think it's worth "allocating" these 3 next (though they need to be
+        # declared). I don't know how to do in place operations...
+
+        # Hold the results of the eigendecomposition of the Gram matrix G
+        # (eigen vectors on columns of V).
+        self.d = numpy.zeros([self.n_eigen + self.minibatch_size])
+        self.V = numpy.zeros([self.n_eigen + self.minibatch_size, self.n_eigen + self.minibatch_size])
+
+        # Holds the unnormalized eigenvectors of the covariance matrix before
+        # they're copied back to Xt.
+        self.Ut = numpy.zeros([self.n_eigen, self.n_dim])
+
+
+    def observe(self, x):
+        assert(numpy.size(x) == self.n_dim)
+
+        self.n_observations += 1
+
+        # Add the *non-centered* observation to Xt.
+        row = self.n_eigen + self.minibatch_index
+        self.Xt[row] = x
+
+        # Update the discounted sum of the observations.
+        self.x_sum *= self.gamma
+        self.x_sum += x
+
+        # To get the mean, we must normalize the sum by:
+        # /gamma^(n_observations-1) + /gamma^(n_observations-2) + ... + 1
+        normalizer = (1.0 - pow(self.gamma, self.n_observations)) /(1.0 - self.gamma);
+        #print "normalizer: ", normalizer
+
+        # Now center the observation.
+        # We will lose the first observation as it is the only one in the mean.
+        if self.centering:
+            self.Xt[row] -= self.x_sum / normalizer
+
+        # Multiply the observation by the discount compensator. Basically
+        # we make this observation look "younger" than the previous ones. The actual
+        # discount is applied in the reevaluation (and when solving the equations in
+        # the case of TONGA) by multiplying every direction with the same aging factor.
+        rn = pow(self.gamma, -0.5*(self.minibatch_index+1));
+        self.Xt[row] *= rn
+
+        # Update the Gram Matrix.
+        # The column.
+        self.G[:row+1,row] = numpy.dot( self.Xt[:row+1,:], self.Xt[row,:].transpose() )
+        # The symetric row.
+        # There are row+1 values, but the diag doesn't need to get copied.
+        self.G[row,:row] = self.G[:row,row].transpose()
+
+        self.minibatch_index += 1
+
+        if self.minibatch_index == self.minibatch_size:
+            self.reevaluate()
+
+
+    def reevaluate(self):
+        # TODO do the modifications to handle when this is not true.
+        assert(self.minibatch_index == self.minibatch_size);
+
+        # Regularize - not necessary but in case
+        for i in range(self.n_eigen + self.minibatch_size):
+            self.G[i,i] += self.regularizer
+
+        # The Gram matrix is up to date. Get its low rank eigendecomposition.
+        # NOTE: the eigenvalues are in ASCENDING order and the vectors are on
+        # the columns.
+        # With scipy 0.7, you can ask for only some eigenvalues (the n_eigen top
+        # ones) but it doesn't look loke it for scipy 0.6.
+        self.d, self.V = linalg.eigh(self.G) #, overwrite_a=True)
+
+        # Convert the n_eigen LAST eigenvectors of the Gram matrix contained in V
+        # into *unnormalized* eigenvectors U of the covariance (unnormalized wrt
+        # the eigen values, not the moving average).
+        self.Ut = numpy.dot(self.V[:,-self.n_eigen:].transpose(), self.Xt)
+
+        # Take into account the discount factor.
+        # Here, minibatch index is minibatch_size. We age everyone. Because of the
+        # previous multiplications to make some observations "younger" we multiply
+        # everyone by the same factor.
+        # TODO VERIFY THIS!
+        rn = pow(self.gamma, -0.5*(self.minibatch_index+1))
+        inv_rn2 = 1.0/(rn*rn)
+        self.Ut *= 1.0/rn
+        self.d *= inv_rn2;
+
+        #print "*** Reevaluate! ***"
+        #normalizer = (1.0 - pow(self.gamma, self.n_observations)) /(1.0 - self.gamma)
+        #print "normalizer: ", normalizer
+        #print self.d / normalizer
+        #print self.Ut # unnormalized eigen vectors (wrt eigenvalues AND moving average).
+
+        # Update Xt, G and minibatch_index
+        self.Xt[:self.n_eigen,:] = self.Ut
+
+        for i in range(self.n_eigen):
+            self.G[i,i] = self.d[-self.n_eigen+i]
+
+        self.minibatch_index = 0
+
+    # Returns a copy of the current estimate of the eigen values and vectors
+    # (normalized vectors on rows), normalized by the discounted number of observations.
+    def getLeadingEigen(self):
+        # We subtract self.minibatch_index in case this call is not right after a reevaluate call.
+        normalizer = (1.0 - pow(self.gamma, self.n_observations - self.minibatch_index)) /(1.0 - self.gamma)
+
+        eigvals = self.d[-self.n_eigen:] / normalizer
+        eigvecs = numpy.zeros([self.n_eigen, self.n_dim])
+        for i in range(self.n_eigen):
+            eigvecs[i] = self.Ut[-self.n_eigen+i] / numpy.sqrt(numpy.dot(self.Ut[-self.n_eigen+i], self.Ut[-self.n_eigen+i]))
+
+        return [eigvals, eigvecs]
+
+
 
 ##################################################
 if __name__ == "__main__":
@@ -522,7 +699,7 @@ if __name__ == "__main__":
 
     # Load precomputed PCA transformation if requested; otherwise compute it.
     if args.load_file:
-        pca = PCA.load(args.load_file)
+        pca = Block.load(args.load_file)
     else:
         print "... computing PCA"
         pca = PCAImpl(**conf)
