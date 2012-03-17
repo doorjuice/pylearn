@@ -903,6 +903,10 @@ class mu_pooled_ssRBM(RBM):
             mu0,
             W_irange=None,
             rng=None):
+        
+        # init the base RBM object using default values (fix compatibility issues)
+        super(mu_pooled_ssRBM, self).__init__(nvis=nvis, nhid=nhid, rng=rng)
+        
         if rng is None:
             # TODO: global rng default seed
             rng = numpy.random.RandomState(1001)
