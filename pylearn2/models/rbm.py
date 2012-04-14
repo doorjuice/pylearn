@@ -973,13 +973,15 @@ class mu_pooled_ssRBM(RBM):
 
         # sample s given (v,h)
         s_mu, s_var = self.mean_var_s_given_v_h1(v)
-        s_mu_shape = (batch_size, self.nslab)
+        #s_mu_shape = (batch_size, self.nslab)
+        s_mu_shape = (16, self.nslab)  # @dave: THEANO HACK (bugfix for rita2)
         s_sample = s_mu + rng.normal(size=s_mu_shape) * tensor.sqrt(s_var)
         #s_sample=(s_sample.reshape()*h_sample.dimshuffle(0,1,'x')).flatten(2)
 
         # sample v given (s,h)
         v_mean, v_var = self.mean_var_v_given_h_s(h_sample, s_sample)
-        v_mean_shape = (batch_size, self.nvis)
+        #v_mean_shape = (batch_size, self.nvis)
+        v_mean_shape = (16, int(self.nvis))  # @dave: THEANO HACK (bugfix for rita2)
         v_sample = rng.normal(size=v_mean_shape) * tensor.sqrt(v_var) + v_mean
 
         del batch_size
