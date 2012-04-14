@@ -80,10 +80,11 @@ class _PCABase(Block):
         self.W = None
         self.v = None
         self.mean = None
+        print "COMP", self.num_components
 
         self.component_cutoff = theano.shared(
-                                    theano._asarray(0, dtype='int64'),
-                                    name='component_cutoff')
+                                theano._asarray(self.num_components, dtype='int64'),
+                                name='component_cutoff')
 
         # This module really has no adjustable parameters -- once train()
         # is called once, they are frozen, and are not modified via gradient
@@ -123,9 +124,11 @@ class _PCABase(Block):
         self.W = sharedX(W, name='W')
         self.v = sharedX(v, name='v')
         self.mean = sharedX(mean, name='mean')
+        
+        # Update, if needed, the component index from which to cut off
+        self._update_cutoff()
 
         # Filter out unwanted components, permanently.
-        self._update_cutoff()
         component_cutoff = self.component_cutoff.get_value(borrow=True)
         self.v.set_value(self.v.get_value(borrow=True)[:component_cutoff])
         self.W.set_value(self.W.get_value(borrow=True)[:, :component_cutoff])

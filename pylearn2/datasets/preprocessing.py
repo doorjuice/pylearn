@@ -362,7 +362,7 @@ class PCA(object):
                 raise ValueError("can_fit is False, but PCA preprocessor "
                                  "object has no fitted model stored")
             from pylearn2 import pca
-            self._pca = pca.CovEigPCA(self._num_components)
+            self._pca = pca.CovEigPCA(num_components=self._num_components)
             self._pca.train(dataset.get_design_matrix())
             self._transform_func = function([self._input],
                                             self._pca(self._input))
