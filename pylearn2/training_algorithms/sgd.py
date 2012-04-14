@@ -188,8 +188,8 @@ class SGD(TrainingAlgorithm):
                 #
             #"""
 
-            self.monitor.batches_seen += 1
-            self.monitor.examples_seen += batch_size
+            self.monitor._num_batches_seen += 1
+            self.monitor._examples_seen += batch_size
 
         for callback in self.update_callbacks:
             try:
@@ -291,6 +291,7 @@ class ExhaustiveSGD(TrainingAlgorithm):
         self.params = params
 
     def train(self, dataset):
+        print "HERE!"
         if not hasattr(self, 'sgd_update'):
             raise Exception("train called without first calling setup")
         model = self.model
@@ -314,20 +315,23 @@ class ExhaustiveSGD(TrainingAlgorithm):
                 raise Exception("NaN in " + param.name)
         self.first = False
         dataset.set_iteration_scheme('sequential', batch_size=self.batch_size, targets=self.supervised)
+        print "SGD TRAINING STARTED"
         if self.supervised:
             for (batch_in, batch_target) in dataset:
                 grads = self.sgd_update(batch_in, batch_target, self.learning_rate)
-                self.monitor.batches_seen += 1
-                self.monitor.examples_seen += batch_size
+                self.monitor._num_batches_seen += 1
+                self.monitor._examples_seen += batch_size
                 for callback in self.update_callbacks:
                     callback(self)
         else:
             for batch in dataset:
+                print self.monitor._num_batches_seen, self.monitor.num_batches, "percent done,", self.monitor._examples_seen, "examples seen"
                 grads = self.sgd_update(batch, self.learning_rate)
-                self.monitor.batches_seen += 1
-                self.monitor.examples_seen += batch_size
+                self.monitor._num_batches_seen += 1
+                self.monitor._examples_seen += batch_size
                 for callback in self.update_callbacks:
                     callback(self)
+        print "SGD TRAINING DONE"
         if self.termination_criterion is None:
             return True
         else:
