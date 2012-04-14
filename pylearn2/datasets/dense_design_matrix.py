@@ -53,9 +53,9 @@ class DenseDesignMatrix(Dataset):
             indices into the design matrix when choosing minibatches.
         """
         self.X = X
+        self.view_converter = view_converter
         if view_converter is not None:
             assert topo_view is None
-            self.view_converter = view_converter
         else:
             if topo_view is not None:
                 self.set_topological_view(topo_view)
